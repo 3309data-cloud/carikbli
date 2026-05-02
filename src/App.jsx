@@ -16,11 +16,10 @@ import { getAnswerOptionsForDimension } from "./utils/getAnswerOptionsForDimensi
 
 function App() {
   // --- STATE ---
-  // --- STATE ---
   const [data, setData] = useState({
     kbli: [], questions: [], options: [], rules: [],
     synonyms: [], kbliDimensions: [], dimensions: [], dimensionKeywords: [],
-    settings: {} // ✅ Tambahkan ini agar tidak null
+    settings: {}
   });
 
   const [query, setQuery] = useState("");
@@ -28,17 +27,29 @@ function App() {
   const [answers, setAnswers] = useState({});
   const [chatMessages, setChatMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+
+  // State untuk efek UI
   const [isBotTyping, setIsBotTyping] = useState(false);
+  const [showResult, setShowResult] = useState(false);
+  const [isListening, setIsListening] = useState(false); // ✅ State untuk Mic
+  const [copiedCode, setCopiedCode] = useState(null);    // ✅ State untuk Copy Clipboard
+
   const [isReporting, setIsReporting] = useState(false);
   const [isReported, setIsReported] = useState(false);
+  const [selectedKbli, setSelectedKbli] = useState(null);
   const [history, setHistory] = useState(() => {
     const saved = localStorage.getItem("kbli_history_v2");
     return saved ? JSON.parse(saved) : [];
   });
 
-  const chatEndRef = useRef(null);
+  // Refs untuk Scroll Pintar
+  const mainRef = useRef(null);
+  const resultCardRef = useRef(null);
+  const typingRef = useRef(null);
+  const verifikasiRef = useRef(null);
+  const isScrolling = useRef(false);
 
-  // --- 1. INITIAL LOAD ---
+  // --- 1. INITIAL LOAD & OFFLINE SYNC ---
   useEffect(() => {
     async function loadData() {
       try {
@@ -61,24 +72,95 @@ function App() {
       }
     }
     loadData();
+
+    // ✅ TRIGGER SINKRONISASI OFFLINE SAAT APLIKASI DIBUKA & SAAT ONLINE KEMBALI
+    syncOfflineLogs();
+    window.addEventListener('online', syncOfflineLogs);
+    return () => window.removeEventListener('online', syncOfflineLogs);
   }, []);
 
-  // Auto-scroll chat
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatMessages, isBotTyping]);
+  // ✅ FUNGSI SINKRONISASI OFFLINE (Sistem Antrean)
+  const saveToOfflineQueue = (table, payload) => {
+    const queueKey = `offline_${table}_queue`;
+    const currentQueue = JSON.parse(localStorage.getItem(queueKey) || "[]");
+    currentQueue.push(payload);
+    localStorage.setItem(queueKey, JSON.stringify(currentQueue));
+    console.log(`[OFFLINE] Tersimpan lokal di antrean ${table}`);
+  };
+
+  const syncOfflineLogs = async () => {
+    if (!navigator.onLine) return; // Batal jika masih offline
+
+    const tables = ['feedback_logs', 'training_logs'];
+    for (const table of tables) {
+      const queueKey = `offline_${table}_queue`;
+      const queue = JSON.parse(localStorage.getItem(queueKey) || "[]");
+
+      if (queue.length > 0) {
+        try {
+          const { error } = await supabase.from(table).insert(queue);
+          if (!error) {
+            localStorage.removeItem(queueKey); // Hapus antrean jika berhasil
+            console.log(`[SYNC] Berhasil upload ${queue.length} log offline ke ${table}`);
+          } else {
+            console.error(`[SYNC] Supabase error saat upload ${table}:`, error);
+          }
+        } catch (err) {
+          console.error(`[SYNC] Network error saat upload ${table}:`, err);
+        }
+      }
+    }
+  };
+
+  // --- LOGIKA SCROLL KUSTOM YANG PELAN & PINTAR ---
+  const slowScrollTo = (targetScrollTop) => {
+    if (!mainRef.current) return;
+
+    const start = mainRef.current.scrollTop;
+    const distance = targetScrollTop - start;
+    if (Math.abs(distance) < 5) return;
+
+    const duration = 1200;
+    let startTime = null;
+    isScrolling.current = true;
+
+    const stopScroll = () => { isScrolling.current = false; };
+    mainRef.current.addEventListener('touchstart', stopScroll, { once: true });
+    mainRef.current.addEventListener('wheel', stopScroll, { once: true });
+
+    const animation = (currentTime) => {
+      if (!isScrolling.current) return;
+      if (startTime === null) startTime = currentTime;
+
+      const timeElapsed = currentTime - startTime;
+      const progress = Math.min(timeElapsed / duration, 1);
+
+      const ease = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+      mainRef.current.scrollTop = start + distance * ease;
+
+      if (timeElapsed < duration) {
+        requestAnimationFrame(animation);
+      } else {
+        isScrolling.current = false;
+        mainRef.current.removeEventListener('touchstart', stopScroll);
+        mainRef.current.removeEventListener('wheel', stopScroll);
+      }
+    };
+    requestAnimationFrame(animation);
+  };
+
+
 
   // --- 2. SEARCH & INFERENCE ENGINE ---
   const fuse = useMemo(() => new Fuse(data.kbli, {
     keys: [
-      { name: 'keyword', weight: 0.6 },
-      { name: 'nama', weight: 0.2 },   // Naikkan bobot Nama KBLI
-      { name: 'uraian', weight: 0.2 }  // Turunkan bobot Uraian agar tidak mendominasi
+      { name: 'keyword', weight: 0.7 },
+      { name: 'nama', weight: 0.2 },
+      { name: 'uraian', weight: 0.1 }
     ],
-    // --- PERUBAHAN UTAMA DI SINI ---
-    threshold: 0.25,       // Makin mendekati 0, pencarian makin ketat (wajib sama persis)
-    ignoreLocation: true,  // Penting: Agar kata di awal atau di akhir kalimat dinilai sama
-    // -------------------------------
+    threshold: 0.25,
+    ignoreLocation: true,
     useExtendedSearch: true,
     includeScore: true,
   }), [data.kbli]);
@@ -91,21 +173,16 @@ function App() {
   const inference = useMemo(() => {
     if (!submittedQuery) return {};
 
-    const words = [...new Set(expandedQuery.split(/\s+/).filter(w => w.length > 0))]; // Gunakan Set agar kata duplikat di input dihitung 1x
-
+    const words = [...new Set(expandedQuery.split(/\s+/).filter(w => w.length > 0))];
     const aggregateResults = {};
 
     words.forEach((word) => {
       const results = fuse.search(word);
       results.forEach((res) => {
         const id = res.item.kode;
-
-        // LOGIKA BARU: Jika kata sudah ditemukan di KBLI ini, jangan dikalikan lagi skornya
-        // Kita ambil skor terbaik (terkecil) dari kata-kata yang masuk
         if (!aggregateResults[id]) {
           aggregateResults[id] = { ...res, combinedScore: res.score };
         } else {
-          // Mengambil nilai terbaik, bukan akumulasi perkalian
           aggregateResults[id].combinedScore = Math.min(aggregateResults[id].combinedScore, res.score);
         }
       });
@@ -114,58 +191,33 @@ function App() {
     const sortedResults = Object.values(aggregateResults).sort((a, b) => a.combinedScore - b.combinedScore);
     if (sortedResults.length === 0) return { finalResults: [] };
 
-    // SEBELUMNYA: let candidates = sortedResults.slice(0, 5).map(res => ({
-    // UBAH MENJADI:
-
-    // 1. JARING LEBAR: Ambil 30 hasil teks terbaik agar yang relevan tidak terbuang
     let candidates = sortedResults.slice(0, 30).map(res => ({
       ...res.item,
       textScore: Math.min(100, Math.max(0, (1 - res.combinedScore) * 100))
     }));
 
-    // Logika ambiguitas tetap berjalan untuk 30 kandidat ini...
-    const isAmbiguous = candidates.length > 1 && candidates.slice(1).some(c =>
-      c.keyword?.toLowerCase().includes(submittedQuery.toLowerCase())
-    );
-
     const baseResults = candidates.map((c) => {
       let finalBase = c.textScore;
       const searchWords = submittedQuery.toLowerCase().split(/\s+/).filter(w => w.length > 2);
       const fullQuery = submittedQuery.toLowerCase();
-
       let exactBonus = 0;
 
-      // 1. Bonus per kata yang cocok di keyword (Multiplikatif)
-      // Semakin banyak kata yang cocok, bonus semakin besar secara linear
       searchWords.forEach(word => {
         const regex = new RegExp(`\\b${word}\\b`, 'i');
-        if (c.keyword && regex.test(c.keyword.toLowerCase())) {
-          exactBonus += 30; // Jika KBLI 01133 cocok "jagung" dan "manis", ia dapat +60
-        }
+        if (c.keyword && regex.test(c.keyword.toLowerCase())) exactBonus += 30;
       });
 
-      // 2. Bonus Super untuk Frasa Utuh (Phrase Match)
-      // Ini kunci agar "Jagung Manis" menang mutlak atas "Jagung" biasa
-      if (c.keyword && c.keyword.toLowerCase().includes(fullQuery)) {
-        exactBonus += 70; // Bonus tambahan jika frasa persis ditemukan
-      }
-
-      // 3. Penalti untuk Kata yang Hilang (Negative Booster)
-      // Jika user mengetik "manis" tapi KBLI tidak punya keyword "manis", kurangi skornya
-      if (fullQuery.includes("manis") && (!c.keyword || !c.keyword.toLowerCase().includes("manis"))) {
-        exactBonus -= 50;
-      }
+      if (c.keyword && c.keyword.toLowerCase().includes(fullQuery)) exactBonus += 70;
+      if (fullQuery.includes("manis") && (!c.keyword || !c.keyword.toLowerCase().includes("manis"))) exactBonus -= 50;
 
       return { ...c, finalScore: finalBase + exactBonus };
     });
 
-    // 2. SCORING ENGINE: Nilai dan urutkan ulang ke-30 kandidat tersebut
     const scoredResults = calculateScores(baseResults, data.rules, answers);
     const sortedFinal = [...scoredResults].sort((a, b) => b.finalScore - a.finalScore);
     const conf = calculateConfidence(sortedFinal);
     const top = sortedFinal[0];
 
-    // 3. CORONG SEMPIT: Mesin pertanyaan otomatis hanya membedah 5 yang teratas (sesuai kode di questionEngine.js)
     const question = getBestQuestion({
       finalResults: sortedFinal,
       rules: data.rules,
@@ -184,30 +236,86 @@ function App() {
     };
   }, [submittedQuery, expandedQuery, fuse, data, answers]);
 
-  // --- 3. HANDLERS ---
+  // --- 3. HANDLERS & EFFECTS ---
+useEffect(() => {
+    const timer = setTimeout(() => {
+      if (!mainRef.current) return;
 
-  // Automatis simpan riwayat jika bot yakin
+      // ✅ Logika kalkulasi posisi absolut yang super presisi (Anti tertutup header)
+      const calculateTarget = (el) => {
+        const containerTop = mainRef.current.getBoundingClientRect().top;
+        const elTop = el.getBoundingClientRect().top;
+        // Kurangi 16px agar ada sedikit jarak pandang yang nyaman di atas pita kuning
+        return mainRef.current.scrollTop + (elTop - containerTop) - 16; 
+      };
+
+      if (showResult) {
+        // Jika tingkat keyakinan < 80 (Ambigu), scroll tepat ke pita kuning verifikasi
+        if (inference?.confidence < 80 && verifikasiRef.current) {
+          slowScrollTo(calculateTarget(verifikasiRef.current));
+        } 
+        // Jika yakin, scroll ke atas kartu hijau
+        else if (resultCardRef.current) {
+          slowScrollTo(calculateTarget(resultCardRef.current));
+        }
+      } else if (isBotTyping && typingRef.current) {
+        slowScrollTo(calculateTarget(typingRef.current));
+      } else if (chatMessages.length > 0) {
+        if (!showResult && !isBotTyping) {
+          slowScrollTo(mainRef.current.scrollHeight);
+        }
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [chatMessages, isBotTyping, showResult, inference?.confidence]);
   useEffect(() => {
-    if (inference?.topResult && inference.confidence >= 80 && !inference.currentQuestion) {
+    if (showResult && inference?.topResult && inference.confidence >= 80 && !inference.currentQuestion) {
       const result = inference.topResult;
       setHistory((prev) => {
         const filtered = prev.filter((item) => item.kode !== result.kode);
-        const newEntry = {
-          query: submittedQuery,
-          kode: result.kode,
-          nama: result.nama
-        };
+        const newEntry = { query: submittedQuery, kode: result.kode, nama: result.nama };
         const newHistory = [newEntry, ...filtered].slice(0, 5);
         localStorage.setItem("kbli_history_v2", JSON.stringify(newHistory));
         return newHistory;
       });
     }
-  }, [inference.confidence, inference.topResult, submittedQuery]);
+  }, [inference.confidence, inference.topResult, submittedQuery, showResult]);
+
+  useEffect(() => {
+    let timer;
+    if (inference?.topResult && !inference?.currentQuestion) {
+      if (!showResult) {
+        setIsBotTyping(true);
+        timer = setTimeout(() => {
+          setIsBotTyping(false);
+          setShowResult(true);
+        }, 1000);
+      }
+    } else {
+      setShowResult(false);
+    }
+    return () => clearTimeout(timer);
+  }, [inference, showResult]);
+
+  useEffect(() => {
+    const q = inference?.currentQuestion;
+    if (!q) return;
+    const isAlreadyAsked = chatMessages.some(m => m.question?.id === q.id);
+    if (!isAlreadyAsked) {
+      setIsBotTyping(true);
+      const timer = setTimeout(() => {
+        setIsBotTyping(false);
+        setChatMessages(prev => [...prev, { type: "bot", text: q.question, question: q }]);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [inference?.currentQuestion, chatMessages]);
 
   const processSubmit = (searchQuery) => {
     const q = searchQuery.trim();
     if (!q) return;
 
+    setShowResult(false);
     const autoAnswers = extractAnswers(q, data.dimensionKeywords);
     if (Object.keys(autoAnswers).length > 0) {
       setAnswers(prev => ({ ...prev, ...autoAnswers }));
@@ -230,6 +338,7 @@ function App() {
   };
 
   const handleAnswer = (question, value) => {
+    setShowResult(false);
     setAnswers(prev => ({ ...prev, [question.dimension]: value }));
     setChatMessages(prev => [...prev, { type: "user", text: value }]);
   };
@@ -240,7 +349,46 @@ function App() {
     setAnswers({});
     setChatMessages([]);
     setIsReported(false);
-    setSelectedKbli(null); // ✅ Tambahkan ini
+    setSelectedKbli(null);
+    setShowResult(false);
+    setCopiedCode(null);
+  };
+
+  // ✅ FITUR: Salin Kode ke Clipboard
+  const handleCopyKbli = (kode, e) => {
+    if (e) e.stopPropagation(); // Mencegah klik tombol ter-trigger
+    navigator.clipboard.writeText(kode);
+    setCopiedCode(kode);
+
+    // Opsional: Beri efek getar sedikit (Haptic Feedback) jika HP mendukung
+    if (window.navigator.vibrate) window.navigator.vibrate(50);
+
+    setTimeout(() => setCopiedCode(null), 2000);
+  };
+
+  // ✅ FITUR: Input Suara (Web Speech API)
+  const handleVoiceSearch = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Maaf, browser atau perangkat Anda tidak mendukung fitur input suara.");
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'id-ID';
+    recognition.interimResults = false;
+
+    recognition.onstart = () => setIsListening(true);
+    recognition.onresult = (event) => {
+      const transcript = event.results[0][0].transcript;
+      setQuery(transcript);
+    };
+    recognition.onerror = (event) => {
+      console.error("Mic error:", event.error);
+      setIsListening(false);
+    };
+    recognition.onend = () => setIsListening(false);
+
+    recognition.start();
   };
 
   const handleReportError = async () => {
@@ -250,112 +398,139 @@ function App() {
     }
     if (isReporting || isReported) return;
     setIsReporting(true);
+
+    const payload = {
+      query: submittedQuery,
+      wrong_kode: inference.topResult.kode,
+      answers_snapshot: answers,
+      created_at: new Date().toISOString(),
+    };
+
     try {
-      const { error } = await supabase.from('feedback_logs').insert([{
-        query: submittedQuery,
-        wrong_kode: inference.topResult.kode,
-        answers_snapshot: answers,
-        created_at: new Date().toISOString(),
-      }]);
-      if (error) throw error;
+      // ✅ SINKRONISASI OFFLINE: Jika tidak ada sinyal, simpan ke lokal
+      if (navigator.onLine) {
+        const { error } = await supabase.from('feedback_logs').insert([payload]);
+        if (error) throw error;
+      } else {
+        saveToOfflineQueue('feedback_logs', payload);
+      }
       setIsReported(true);
     } catch (err) {
-      console.error("Gagal kirim:", err.message);
+      console.error("Gagal kirim, menyimpan ke antrean offline:", err.message);
+      saveToOfflineQueue('feedback_logs', payload);
+      setIsReported(true); // Tetap anggap sukses di UI agar petugas bisa lanjut bekerja
     } finally {
       setIsReporting(false);
     }
   };
-  // Tambahkan satu state baru di atas (bersama state lainnya)
-  const [selectedKbli, setSelectedKbli] = useState(null);
 
   async function handleTrainingSubmit(selectedItem) {
     setSelectedKbli(selectedItem);
-    setIsReported(true); // Langsung set reported agar UI berubah
+    setIsReported(true);
+
+    const payload = {
+      raw_query: submittedQuery,
+      selected_kode: selectedItem.kode,
+      final_candidates: inference.finalResults.slice(0, 6),
+      chat_history: answers,
+      created_at: new Date().toISOString()
+    };
 
     try {
-      await supabase.from('training_logs').insert([{
-        raw_query: submittedQuery,
-        selected_kode: selectedItem.kode,
-        final_candidates: inference.finalResults.slice(0, 5),
-        chat_history: answers
-      }]);
+      // ✅ SINKRONISASI OFFLINE: Jika tidak ada sinyal, simpan ke lokal
+      if (navigator.onLine) {
+        const { error } = await supabase.from('training_logs').insert([payload]);
+        if (error) throw error;
+      } else {
+        saveToOfflineQueue('training_logs', payload);
+      }
     } catch (err) {
-      console.error("Error:", err);
+      console.error("Gagal training, menyimpan ke antrean offline:", err);
+      saveToOfflineQueue('training_logs', payload);
     }
   }
-  // Bot Typing Effect
-  useEffect(() => {
-    const q = inference?.currentQuestion;
-    if (!q) return;
-    const isAlreadyAsked = chatMessages.some(m => m.question?.id === q.id);
-    if (!isAlreadyAsked) {
-      setIsBotTyping(true);
-      const timer = setTimeout(() => {
-        setIsBotTyping(false);
-        setChatMessages(prev => [...prev, { type: "bot", text: q.question, question: q }]);
-      }, 600);
-      return () => clearTimeout(timer);
-    }
-  }, [inference?.currentQuestion, chatMessages]);
 
   if (isLoading) return (
     <div className="fixed inset-0 bg-gray-50 flex flex-col items-center justify-center">
-      <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-      <p className="mt-4 text-gray-500 font-medium text-sm text-center px-4">Memuat Sistem Sensus Ekonomi 2026...</p>
+      <div className="w-12 h-12 border-4 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
+      <p className="mt-4 text-gray-600 font-medium">Menyiapkan KBLI...</p>
     </div>
   );
 
   return (
-    <div className="fixed inset-0 bg-gray-100 flex justify-center overflow-hidden">
-      <div className="w-full max-w-md bg-white shadow-2xl h-full flex flex-col relative">
+    <div className="fixed inset-0 bg-gray-100 flex justify-center items-start sm:items-center p-0 sm:p-4">
+      <div className="w-full max-w-2xl bg-white sm:rounded-3xl shadow-xl h-full sm:h-[90vh] flex flex-col overflow-hidden border border-gray-200">
 
-        <header className="bg-blue-700 text-white p-5 shrink-0 z-30 shadow-md">
-          <h1 className="text-xl font-bold tracking-tight">KBLI AI Assistant</h1>
-          <p className="text-xs text-blue-200 opacity-90">Sensus Ekonomi 2026 - BPS Boyolali</p>
+        {/* Header */}
+        <header className="bg-white border-b border-gray-100 p-4 shrink-0 flex justify-between items-center z-50">
+          <div>
+            <h1 className="text-lg font-black text-gray-800 flex items-center gap-2">
+              <span className="bg-orange-500 text-white p-1 rounded-md shadow-sm">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+              </span>
+              Pencarian KBLI
+            </h1>
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-tighter">BPS Kabupaten Boyolali • Sensus Ekonomi 2026</p>
+          </div>
+          {chatMessages.length === 0 && (
+            <button onClick={handleReset} className="text-gray-400 hover:text-orange-500 p-2 transition-colors">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+            </button>
+          )}
         </header>
 
-        <main className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50 pb-8">
+        {/* Area Chat */}
+        <main ref={mainRef} className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-6 bg-gray-50/50">
+
           {chatMessages.length === 0 && (
-            <div className="text-center text-gray-400 py-10 text-sm">
-              Ketikkan kegiatan usaha untuk memulai.<br />Contoh: "Menanam jagung manis"
+            <div className="flex flex-col items-center justify-center h-full text-center space-y-4">
+              <div className="bg-orange-100 p-6 rounded-full text-orange-500">
+                <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
+              </div>
+              <div>
+                <p className="text-gray-800 font-bold text-lg px-6">Halo Petugas Lapangan!</p>
+                <p className="text-gray-500 text-sm px-10">Ketik aktivitas ekonomi yang Anda temukan untuk diklasifikasikan.</p>
+              </div>
             </div>
           )}
 
           {chatMessages.map((msg, idx) => (
             <div key={idx} className={`flex ${msg.type === "user" ? "justify-end" : "justify-start"}`}>
-              <div className={`max-w-[85%] px-4 py-3 rounded-2xl text-sm shadow-sm ${msg.type === "user" ? "bg-blue-600 text-white rounded-tr-none" : "bg-white border border-gray-200 text-gray-800 rounded-tl-none"
+              <div className={`max-w-[90%] px-4 py-3 rounded-2xl text-sm transition-all ${msg.type === "user"
+                ? "bg-orange-500 text-white rounded-tr-none shadow-md shadow-orange-100"
+                : "bg-white border border-gray-200 text-gray-700 rounded-tl-none shadow-sm"
                 }`}>
                 {msg.text}
                 {msg.type === "bot" && msg.question && (
-                  <div className="flex flex-wrap gap-2 mt-3">
+                  <div className="grid grid-cols-1 gap-2 mt-4">
                     {data.options
                       .filter(opt => String(opt.question_id) === String(msg.question.id))
-                      .map(opt => (
-                        <button key={opt.id} onClick={() => handleAnswer(msg.question, opt.value)}
-                          className="bg-blue-50 text-blue-600 border border-blue-100 px-3 py-1.5 rounded-full text-xs font-bold hover:bg-blue-600 hover:text-white transition-all shadow-sm">
-                          {opt.label}
-                        </button>
-                      ))}
-                    { //Filtered Option
-                      //(() => {
-                      // const dynamicOptions = getAnswerOptionsForDimension({
-                      //dimension: msg.question.dimension,
-                      //candidates: msg.question.candidates,
-                      //candidateDimsMap: msg.question.candidateDimsMap,
-                      //optionsTable: data.options
-                      //  });
+                      .map(opt => {
+                        // LOGIKA PENGECEKAN
+                        const isAnswered = answers[msg.question.dimension] !== undefined;
+                        const isSelected = answers[msg.question.dimension] === opt.value;
 
-                      //  return dynamicOptions.map(opt => (
-                      //<button
-                      // key={opt.value}
-                      // onClick={() => handleAnswer(msg.question, opt.value)}
-                      // className="bg-blue-50 text-blue-600 border border-blue-100 px-3 py-1.5 rounded-full text-xs font-bold hover:bg-blue-600 hover:text-white transition-all shadow-sm"
-                      // >
-                      //</div>{opt.label}
-                      //</div> </button>
-                      // ));
-                      //</main>  })()
-                    }
+                        return (
+                          <button
+                            key={opt.id}
+                            onClick={() => handleAnswer(msg.question, opt.value)}
+                            disabled={isAnswered} // Mematikan tombol jika pertanyaan ini sudah dijawab
+                            className={`w-full text-left px-4 py-3 rounded-xl text-xs font-bold transition-all flex justify-between items-center ${!isAnswered
+                                ? "bg-gray-50 border border-gray-200 hover:bg-orange-500 hover:text-white active:scale-95 cursor-pointer group" // Belum dijawab (Aktif)
+                                : isSelected
+                                  ? "bg-orange-500 text-white border-transparent shadow-sm" // Jawaban yang dipilih
+                                  : "bg-gray-50 text-gray-400 border border-gray-100 opacity-60 cursor-not-allowed" // Jawaban yang tidak dipilih (Mati)
+                              }`}
+                          >
+                            <span>{opt.label}</span>
+
+                            {/* Munculkan icon centang jika opsi ini yang dipilih */}
+                            {isSelected && (
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" /></svg>
+                            )}
+                          </button>
+                        );
+                      })}
                   </div>
                 )}
               </div>
@@ -363,176 +538,205 @@ function App() {
           ))}
 
           {isBotTyping && (
-            <div className="flex justify-start">
-              <div className="bg-white border rounded-2xl px-4 py-2 shadow-sm flex gap-1 items-center">
-                <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce"></div>
-                <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:0.2s]"></div>
-                <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:0.4s]"></div>
+            <div ref={typingRef} className="flex justify-start">
+              <div className="bg-white border border-gray-200 rounded-full px-4 py-3 flex gap-1 shadow-sm">
+                <span className="w-2 h-2 bg-orange-400 rounded-full animate-bounce"></span>
+                <span className="w-2 h-2 bg-orange-400 rounded-full animate-bounce [animation-delay:0.2s]"></span>
+                <span className="w-2 h-2 bg-orange-400 rounded-full animate-bounce [animation-delay:0.4s]"></span>
               </div>
             </div>
           )}
 
-          {/* HASIL AKHIR KBLI */}
-          {/* ============================================================ */}
-          {/* SECTION: HASIL AKHIR & PEMBELAJARAN AI                      */}
-          {/* ============================================================ */}
-          {/* SECTION: HASIL AKHIR */}
-          {inference.topResult && !inference.currentQuestion && !isBotTyping && (
-            <div className={`bg-white border-2 ${isReported ? 'border-green-400' : 'border-yellow-400'} rounded-2xl overflow-hidden shadow-xl animate-in fade-in slide-in-from-bottom-4`}>
-              {inference.confidence >= 80 ? (
-                <div className="bg-green-50 border-2 border-green-200 rounded-2xl p-5 shadow-sm">
-                  {/* Visualisasi Hierarki */}
-                  <div className="flex flex-col gap-2 mb-4 border-b border-green-100 pb-4">
-                    <div className="flex items-start gap-2">
-                      <span className="bg-green-600 text-white text-[9px] font-black px-1.5 py-0.5 rounded shadow-sm shrink-0 mt-0.5">
+          {/* HASIL KBLI FINAL */}
+          {showResult && inference.topResult && !inference.currentQuestion && !isBotTyping && (
+            <div ref={resultCardRef} className="space-y-4 animate-in fade-in slide-in-from-bottom-6 duration-700 pb-10">
+              <div className={`rounded-3xl overflow-hidden shadow-lg transition-all border-t-8 ${isReported ? 'border-green-500' : (inference.confidence >= 80 ? 'border-green-500' : 'border-yellow-400')}`}>
+
+                {inference.confidence >= 80 ? (
+                  <div className="bg-green-50 p-5 border-x border-b border-green-100">
+                    <div className="flex flex-wrap gap-2 mb-4">
+                      <span className="bg-green-600 text-white text-[12px] font-black px-1.5 py-0.5 rounded shadow-sm shrink-0 mt-0.5">
                         {getKbliHierarchy(inference.topResult.kode).catLet}
                       </span>
-                      <span className="text-[10px] text-green-800 font-bold uppercase leading-tight">
+                      <span className="text-[12px] text-green-800 font-bold uppercase leading-tight">
                         {getKbliHierarchy(inference.topResult.kode).catName}
                       </span>
                     </div>
-                    <div className="flex items-start gap-2 ml-1">
-                      <div className="w-1 h-3 bg-green-200 rounded-full shrink-0 mt-1"></div>
-                      <span className="text-[10px] text-green-700 font-semibold leading-tight">
-                        {getKbliHierarchy(inference.topResult.kode).group}. {getKbliHierarchy(inference.topResult.kode).groupName}
-                      </span>
-                    </div>
-                  </div>
 
-                  {/* Informasi Utama */}
-                  <div className="space-y-1 mb-4">
-                    <span className="text-[10px] font-black text-green-600 uppercase tracking-widest">Saran Kode KBLI</span>
-                    <div className="text-2xl font-black text-green-900 my-1">{inference.topResult.kode}</div>
-                    <h3 className="font-bold text-gray-800 leading-tight text-lg">{inference.topResult.nama}</h3>
-                  </div>
+                    <div className="space-y-1">
+                      <p className="text-[10px] font-black text-green-600 uppercase tracking-widest">Saran Kode KBLI</p>
 
-                  {/* Deskripsi */}
-                  <div className="bg-white/60 rounded-xl p-3 border border-green-100 mb-4">
-                    <p className="text-[11px] text-gray-600 italic leading-relaxed">"{inference.topResult.uraian}"</p>
-                  </div>
-
-                  {/* Footer & Confidence */}
-                  <div className="space-y-3 pt-2">
-                    <div className="flex justify-between items-center px-1">
-                      <span className="text-[10px] font-bold text-gray-400 uppercase">Confidence Score</span>
-                      <div className="flex items-center gap-2">
-                        <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                          <div className="h-full bg-green-500 transition-all duration-1000" style={{ width: `${inference.confidence}%` }}></div>
-                        </div>
-                        <span className="text-sm font-black text-green-700">{Math.round(inference.confidence)}%</span>
-                      </div>
-                    </div>
-
-                    <button onClick={handleReset} className="w-full bg-green-600 text-white font-bold py-3 rounded-xl shadow-lg hover:bg-green-700 transition-all active:scale-95">
-                      Mulai Pencarian Baru
-                    </button>
-
-                    <button onClick={handleReportError} disabled={isReporting || isReported}
-                      className={`w-full py-2 mt-1 text-[10px] font-bold rounded-lg border transition-all ${isReported ? "bg-gray-100 text-gray-400 border-gray-200" : "text-red-500 border-red-200 hover:bg-red-50"
-                        }`}>
-                      {isReported ? "✓ Laporan Terkirim" : "⚠️ Laporkan Jika Salah"}
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                /* DISINI PERBAIKANNYA: Elemen di bawah ini harus dibungkus satu parent */
-                <div className="flex flex-col">
-                  <div className={`${isReported ? 'bg-green-400' : 'bg-yellow-400'} p-3 flex items-center gap-2`}>
-                    <span className={`text-xs font-black ${isReported ? 'text-green-900' : 'text-yellow-900'} uppercase`}>
-                      {isReported ? "✓ Pilihan Terkonfirmasi" : "Verifikasi Diperlukan"}
-                    </span>
-                  </div>
-
-                  <div className="p-4 space-y-4">
-                    <p className="text-[11px] text-gray-600 leading-tight">
-             {isReported ? "" : "Saya menemukan beberapa kode yang mendekati. Mohon pilih yang paling sesuai dengan aktivitas lapangan:"}
-          </p>
-                    <div className="space-y-2">
-                      {(isReported && selectedKbli ? [selectedKbli] : inference.finalResults.slice(0, 6)).map((cand) => (
+                      {/* ✅ FITUR: TOMBOL SALIN (High Confidence) */}
+                      <div className="flex items-center gap-3">
+                        <h2 className="text-4xl font-black text-green-900 tracking-tighter">{inference.topResult.kode}</h2>
                         <button
-                          key={cand.kode}
-                          disabled={isReported}
-                          onClick={() => handleTrainingSubmit(cand)}
-                          className={`w-full text-left p-3 rounded-xl border transition-all ${isReported
-                              ? "border-green-200 bg-green-50"
-                              : "border-gray-200 hover:border-blue-500 hover:bg-blue-50"
-                            }`}
+                          onClick={(e) => handleCopyKbli(inference.topResult.kode, e)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-green-200/50 hover:bg-green-200 text-green-700 rounded-xl transition-all shadow-sm active:scale-95"
+                          title="Salin Kode"
                         >
-                          <div className="flex justify-between items-start mb-1">
-                            <span className={`${isReported ? 'bg-green-600 text-white' : 'bg-blue-100 text-blue-700'} text-[10px] font-black px-2 py-0.5 rounded uppercase`}>
-                              KBLI {cand.kode}
-                            </span>
-                            {isReported && <span className="text-[10px] font-bold text-green-600 uppercase">✓ Terverifikasi</span>}
-                          </div>
-                          <div className={`font-bold ${isReported ? 'text-green-900' : 'text-gray-800'} text-sm`}>
-                            {cand.nama}
-                          </div>
-                          <p className="text-[10px] text-gray-500 mt-1 line-clamp-2 italic italic">"{cand.uraian}"</p>
+                          {copiedCode === inference.topResult.kode ? (
+                            <><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><polyline strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" points="20 6 9 17 4 12" /></svg> <span className="text-[10px] font-bold">Tersalin!</span></>
+                          ) : (
+                            <><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" strokeWidth="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" strokeWidth="2"></path></svg> <span className="text-[10px] font-bold uppercase tracking-tighter">Salin</span></>
+                          )}
                         </button>
-                      ))}
+                      </div>
+
+                      <h3 className="text-lg font-bold text-gray-800 leading-tight pt-2">{inference.topResult.nama}</h3>
                     </div>
 
-                    {isReported && (
-                      <div className="bg-blue-50 border border-blue-100 p-3 rounded-xl animate-in fade-in zoom-in duration-300">
-                        <p className="text-xs text-blue-800 leading-relaxed font-medium">
-                          {data.settings?.learning_mode === 'frequency'
-                            ? "Terima kasih! Sistem telah mempelajari istilah baru ini secara otomatis."
-                            : "Terima kasih! Istilah ini telah dikirim ke Admin untuk divalidasi."}
-                        </p>
-                      </div>
-                    )}
+                    <div className="mt-4 p-4 bg-white/60 rounded-2xl border border-green-200 italic text-gray-600 text-xs leading-relaxed">
+                      "{inference.topResult.uraian}"
+                    </div>
 
-                    {isReported && (
-                      <button
-                        onClick={handleReset}
-                        className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl shadow-lg hover:bg-blue-700 transition-all active:scale-95"
-                      >
+                    <div className="mt-6 flex flex-col gap-3">
+                      <div className="flex items-center justify-between bg-white/80 p-3 rounded-2xl shadow-sm border border-green-100">
+                        <div className="flex items-center gap-2">
+                          <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center">
+                            <span className="text-xs font-black text-green-700">{Math.round(inference.confidence)}%</span>
+                          </div>
+                          <span className="text-[10px] font-bold text-green-800 uppercase">Tingkat Kecocokan</span>
+                        </div>
+                      </div>
+
+                      <button onClick={handleReset} className="w-full bg-green-600 text-white font-bold py-4 rounded-2xl shadow-lg hover:bg-green-700 transition-all active:scale-95">
                         Mulai Pencarian Baru
                       </button>
-                    )}
+
+                      <button onClick={handleReportError} disabled={isReporting || isReported}
+                        className={`w-full py-3 text-xs font-bold rounded-xl border-2 transition-all ${isReported ? "bg-white/50 text-gray-400 border-gray-200" : "text-red-500 border-red-200 hover:bg-red-50"
+                          }`}>
+                        {isReported ? "✓ Laporan Terkirim" : "⚠️ Laporkan Jika Aplikasi Salah Identifikasi"}
+                      </button>
+                    </div>
                   </div>
-                </div>
-              )}
+                ) : (
+                  <div className="bg-white border-x border-b border-gray-200 rounded-b-3xl">
+                    <div ref={verifikasiRef} className={`${isReported ? 'bg-green-400' : 'bg-yellow-400'} p-4 flex items-center gap-2`}>
+                      <span className={`text-xs font-black ${isReported ? 'text-green-900' : 'text-yellow-900'} uppercase tracking-tight`}>
+                        {isReported ? "✓ Pilihan Terkonfirmasi" : "⚠️ Verifikasi Diperlukan"}
+                      </span>
+                    </div>
+
+                    <div className="p-5">
+                      {!isReported && (
+                        <div className="mb-4">
+                          <p className="text-sm font-bold text-gray-800">Saya menemukan beberapa kode KBLI yang cocok dengan pencarian anda :</p>
+                          <p className="text-[11px] text-gray-500 mt-1">Untuk meningkatkan akurasi aplikasi kedepannya, pilih salah satu yang paling relevan dengan usaha responden.</p>
+                        </div>
+                      )}
+
+                      <div className="space-y-3">
+                        {(isReported && selectedKbli ? [selectedKbli] : inference.finalResults.slice(0, 6)).map((cand) => (
+                          <button
+                            key={cand.kode}
+                            // ❌ ATRIBUT INI DIHAPUS: disabled={isReported} 
+                            // ✅ KITA GANTI LOGIKANYA DI ONCLICK:
+                            onClick={() => {
+                              if (!isReported) handleTrainingSubmit(cand);
+                            }}
+                            className={`w-full text-left p-4 rounded-2xl border-2 transition-all ${isReported
+                              ? "border-green-200 bg-green-50 opacity-100 cursor-default" // Ditambah cursor-default agar tidak terlihat seperti tombol yang bisa diklik lagi
+                              : "border-gray-100 hover:border-orange-500 bg-white shadow-sm active:scale-[0.98]"
+                              }`}
+                          >
+                            <div className="flex justify-between items-center mb-2">
+                              <span className={`px-2 py-1 rounded text-[10px] font-black ${isReported ? 'bg-green-600 text-white' : 'bg-orange-100 text-orange-700'}`}>
+                                KBLI {cand.kode}
+                              </span>
+
+                              {/* ✅ FITUR: TOMBOL SALIN (Untuk KBLI yang dikonfirmasi manual) */}
+                              {isReported && (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] font-black text-green-600 tracking-tighter">✓ TERVERIFIKASI</span>
+                                  <div
+                                    onClick={(e) => handleCopyKbli(cand.kode, e)}
+                                    // Ditambah cursor-pointer agar saat diarahkan ke ikon salin kursor berubah
+                                    className="p-1.5 bg-green-100 text-green-700 rounded hover:bg-green-200 transition-colors shadow-sm ml-1 cursor-pointer"
+                                    title="Salin Kode"
+                                  >
+                                    {copiedCode === cand.kode ? (
+                                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><polyline strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" points="20 6 9 17 4 12" /></svg>
+                                    ) : (
+                                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" strokeWidth="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" strokeWidth="2"></path></svg>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                            <p className={`font-bold text-sm ${isReported ? 'text-green-900' : 'text-gray-800'}`}>{cand.nama}</p>
+                            <p className="text-[10px] text-gray-500 mt-1 line-clamp-2 italic">"{cand.uraian}"</p>
+                          </button>
+                        ))}
+                      </div>
+
+                      {isReported && (
+                        <div className="mt-4 bg-green-50 border border-green-100 p-4 rounded-2xl animate-in fade-in duration-300">
+                          <p className="text-xs text-green-800 leading-relaxed font-medium">
+                            {data.settings?.learning_mode === 'frequency'
+                              ? "Terima kasih! Sistem telah mempelajari istilah baru ini secara otomatis."
+                              : "Terima kasih! Masukan Anda telah membantu meningkatkan akurasi aplikasi. Data ini akan digunakan untuk melatih model agar lebih pintar dalam memahami aktivitas ekonomi di masa depan."}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </main>
 
-        <div className="shrink-0 bg-white border-t shadow-[0_-5px_15px_rgba(0,0,0,0.05)] z-40">
-          {query === "" && history.length > 0 && (
-            <div className="p-3 pb-2 animate-in slide-in-from-bottom-2 duration-300">
-              <div className="flex justify-between items-center mb-1.5 px-1">
-                <span className="text-[9px] text-gray-400 font-bold uppercase tracking-wider">Terakhir Dicari</span>
-                <button onClick={() => { setHistory([]); localStorage.removeItem("kbli_history_v2"); }} className="text-[9px] text-red-400 hover:underline">Hapus</button>
-              </div>
-              <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
-                {history.map((item, idx) => (
-                  <button key={idx} onClick={() => handleSelectHistory(item)}
-                    className="flex-shrink-0 flex items-center gap-2 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg hover:border-blue-300 hover:bg-blue-50 transition-all active:scale-95 group">
-                    <div className="bg-blue-100 text-blue-700 text-[10px] font-black px-1.5 py-0.5 rounded group-hover:bg-blue-600 group-hover:text-white">{item.kode}</div>
-                    <div className="flex flex-col text-left max-w-[120px]">
-                      <div className="text-[10px] font-bold text-gray-800 truncate italic">"{item.query}"</div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+        {/* Footer */}
+        <div className="shrink-0 bg-white border-t border-gray-100 p-4 shadow-[0_-10px_20px_-10px_rgba(0,0,0,0.05)] z-20">
+          {chatMessages.length === 0 ? (
+            <>
+              {history.length > 0 && (
+                <div className="mb-4 overflow-x-auto flex gap-2 no-scrollbar pb-2">
+                  {history.map((item, idx) => (
+                    <button key={idx} onClick={() => handleSelectHistory(item)}
+                      className="shrink-0 bg-orange-50 hover:bg-orange-100 border border-orange-100 px-3 py-2 rounded-xl flex items-center gap-2 transition-all active:scale-95 group">
+                      <span className="text-[10px] font-black text-orange-600">{item.kode}</span>
+                      <span className="text-[10px] font-bold text-gray-600 truncate max-w-[80px]">"{item.query}"</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2 items-center">
 
-          <footer className="p-3 flex gap-2 items-center bg-white">
-            <button onClick={handleReset} className="p-3 bg-gray-100 rounded-full text-gray-400 hover:text-red-500 transition-all shrink-0">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                {/* ✅ FITUR: TOMBOL MIC DAN INPUT */}
+                <div className="flex-1 relative flex items-center bg-gray-50 border-2 border-transparent focus-within:border-orange-400 focus-within:bg-white rounded-2xl px-2 transition-all">
+                  <input
+                    type="text" value={query} onChange={(e) => setQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+                    placeholder={isListening ? "Mendengarkan..." : "Ketik aktivitas..."}
+                    className="w-full bg-transparent border-none py-4 px-3 text-sm font-medium outline-none placeholder:text-gray-400"
+                    autoFocus
+                  />
+                  <button
+                    onClick={handleVoiceSearch}
+                    className={`p-2.5 rounded-xl transition-all ${isListening ? 'bg-red-100 text-red-500 animate-pulse' : 'text-gray-400 hover:text-orange-500 hover:bg-orange-50'}`}
+                    title="Cari dengan Suara"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" x1="12" y1="19" x2="12" y2="23"></line><line strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" x1="8" y1="23" x2="16" y2="23"></line></svg>
+                  </button>
+                </div>
+
+                <button onClick={handleSubmit} disabled={!query.trim() && !isListening}
+                  className="bg-orange-500 disabled:bg-gray-200 text-white p-4 rounded-2xl shadow-lg shadow-orange-100/50 active:scale-90 transition-all flex items-center justify-center shrink-0">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 12h14M12 5l7 7-7 7" /></svg>
+                </button>
+              </div>
+            </>
+          ) : (
+            <button
+              onClick={handleReset}
+              className="w-full bg-orange-50 text-orange-600 border-2 border-orange-200 font-bold py-4 rounded-2xl hover:bg-orange-100 transition-all active:scale-[0.98] flex items-center justify-center gap-2 shadow-sm"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+              Mulai Pencarian Baru
             </button>
-            <input
-              type="text" value={query} onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-              placeholder="Cari kegiatan usaha..."
-              className="flex-1 bg-gray-50 border-none rounded-full px-5 py-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-            />
-            <button onClick={handleSubmit} disabled={!query.trim()}
-              className="bg-blue-600 text-white px-6 py-3 rounded-full font-bold shadow-md disabled:bg-gray-200 transition-all active:scale-95 shrink-0">
-              Kirim
-            </button>
-          </footer>
+          )}
         </div>
       </div>
     </div>
