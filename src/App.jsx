@@ -270,12 +270,6 @@ const inference = useMemo(() => {
     }
 
     // 4. PENALTI AMBIGUITAS (Hanya jika input asli petugas sangat pendek)
-    const originalInputWords = rawQuery.split(/\s+/).filter(w => w.length > 2);
-    if (originalInputWords.length === 1 && !c.kode.startsWith("01")) {
-      exactBonus -= 15;
-      if (isTopCandidate) console.log(`⚠️ Penalti Ambiguitas: -15`);
-    }
-
     const finalScore = c.textScore + exactBonus;
     
     if (isTopCandidate) {

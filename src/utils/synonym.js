@@ -1,40 +1,56 @@
 export function expandQuery(query, synonyms) {
-  // Guard clause: Jika query kosong atau tidak ada data sinonim
   if (!query || !synonyms || synonyms.length === 0) {
     return query || "";
   }
 
   let finalQuery = query.trim();
   const lowerQuery = finalQuery.toLowerCase();
-  
-  // OPTIMASI 1: Set untuk Mencegah Duplikasi
-  // Kita tampung sinonim yang sudah ditambahkan agar tidak diulang-ulang
   const addedSynonyms = new Set();
-
-  // Helper untuk mengamankan karakter spesial dalam Regex
   const escapeRegExp = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
   for (const item of synonyms) {
-    // Validasi data kotor dari database Supabase
     if (!item.keyword || !item.synonym) continue;
 
-    const keyword = item.keyword.toLowerCase().trim();
-    const synonym = item.synonym.trim();
+    // --- PERUBAHAN UTAMA: Memecah Keyword Koma ---
+    // Ubah "semangka, blewah, melon" menjadi array: ["semangka", "blewah", "melon"]
+    const keywordArray = item.keyword
+      .split(',')
+      .map(k => k.trim().toLowerCase())
+      .filter(k => k.length > 0);
 
-    // OPTIMASI 2: Word Boundary (\b)
-    // Memastikan kecocokan kata utuh. "jas" tidak akan cocok dengan "jasa"
-    const regex = new RegExp(`\\b${escapeRegExp(keyword)}\\b`, 'i');
+    let isMatchFound = false;
 
-    if (regex.test(lowerQuery)) {
-      const lowerSynonym = synonym.toLowerCase();
-      
-      // OPTIMASI 3: Smart Append
-      // Cek apakah sinonim ini belum pernah kita tambahkan, 
-      // DAN pastikan sinonim ini belum ada di teks asli yang diketik user.
-      // (Mencegah hasil: "jual gorengan jajanan jajanan")
-      if (!addedSynonyms.has(lowerSynonym) && !lowerQuery.includes(lowerSynonym)) {
-        addedSynonyms.add(lowerSynonym);
-        finalQuery += ` ${synonym}`;
+    // Cek setiap kata di dalam array keyword tersebut
+    for (const kw of keywordArray) {
+      const regex = new RegExp(`\\b${escapeRegExp(kw)}\\b`, 'i');
+      if (regex.test(lowerQuery)) {
+        isMatchFound = true;
+        break; // Hentikan loop jika SATU saja kata sudah cocok (biar efisien)
+      }
+    }
+
+    // Jika salah satu dari keyword koma tersebut ada yang cocok
+    if (isMatchFound) {
+      const cleanSynonymText = item.synonym
+        .replace(/[,./?#!$%^&*;:{}=\-_`~()]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      const synonymWords = cleanSynonymText.split(" ");
+      const newSynonymsToAppend = [];
+
+      synonymWords.forEach(synWord => {
+        const lowerSynWord = synWord.toLowerCase();
+        
+        // Pastikan kata sinonim belum ada di query asli atau belum pernah ditambahkan
+        if (!addedSynonyms.has(lowerSynWord) && !lowerQuery.includes(lowerSynWord)) {
+          addedSynonyms.add(lowerSynWord);
+          newSynonymsToAppend.push(synWord);
+        }
+      });
+
+      if (newSynonymsToAppend.length > 0) {
+        finalQuery += ` ${newSynonymsToAppend.join(" ")}`;
       }
     }
   }
