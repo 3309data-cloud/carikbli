@@ -167,74 +167,149 @@ function App() {
 
   const expandedQuery = useMemo(() => {
     const cleaned = cleanQuery(submittedQuery);
-    return expandQuery(cleaned, data.synonyms);
+    const expanded = expandQuery(cleaned, data.synonyms);
+    console.log(expanded);
+    return expanded;
   }, [submittedQuery, data.synonyms]);
 
-  const inference = useMemo(() => {
-    if (!submittedQuery) return {};
+const inference = useMemo(() => {
+  if (!submittedQuery) return {};
 
-    const words = [...new Set(expandedQuery.split(/\s+/).filter(w => w.length > 0))];
-    const aggregateResults = {};
+  // 1. Kumpulan kata unik dari hasil ekspansi (termasuk kata asli + sinonim)
+  const allTerms = [...new Set(expandedQuery.split(/\s+/).filter(w => w.length > 2))];
+  const aggregateResults = {};
 
-    words.forEach((word) => {
-      const results = fuse.search(word);
-      results.forEach((res) => {
-        const id = res.item.kode;
-        if (!aggregateResults[id]) {
-          aggregateResults[id] = { ...res, combinedScore: res.score };
-        } else {
-          aggregateResults[id].combinedScore = Math.min(aggregateResults[id].combinedScore, res.score);
+  // Fuse search tetap menggunakan kata per kata dari ekspansi
+  allTerms.forEach((word) => {
+    const results = fuse.search(word);
+    results.forEach((res) => {
+      const id = res.item.kode;
+      if (!aggregateResults[id]) {
+        aggregateResults[id] = { ...res, combinedScore: res.score };
+      } else {
+        aggregateResults[id].combinedScore = Math.min(aggregateResults[id].combinedScore, res.score);
+      }
+    });
+  });
+
+  const sortedResults = Object.values(aggregateResults).sort((a, b) => a.combinedScore - b.combinedScore);
+  if (sortedResults.length === 0) return { finalResults: [] };
+
+  let candidates = sortedResults.slice(0, 30).map(res => ({
+    ...res.item,
+    textScore: Math.min(100, Math.max(0, (1 - res.combinedScore) * 100))
+  }));
+
+  const baseResults = candidates.map((c, index) => {
+    let exactBonus = 0;
+    const isTopCandidate = index < 5;
+    
+    // --- KUNCI PERBAIKAN: Gunakan allTerms, bukan rawQuery ---
+    const searchWords = allTerms; 
+    const rawQuery = submittedQuery.toLowerCase().trim();
+
+    if (isTopCandidate) {
+      console.group(`🔍 ANALISIS SKORING: [${c.kode}] ${c.nama}`);
+      console.log(`Base TextScore (Fuse): ${c.textScore.toFixed(2)}`);
+      console.log(`Kata yang diproses: ${searchWords.join(", ")}`);
+    }
+
+    const ignoredWords = [];
+
+    // 1. LOGIKA KATA PER KATA (Unigram)
+    searchWords.forEach(word => {
+      if (ignoredWords.includes(word.toLowerCase())) {
+        if (isTopCandidate) console.log(`⏭️ Kata "${word}" diabaikan (Stopword)`);
+        return;
+      }
+
+      const wordRegex = new RegExp(`\\b${word}\\b`, 'i');
+      let matchCount = 0;
+      let wordBonus = 0;
+
+      if (c.keyword && wordRegex.test(c.keyword.toLowerCase())) {
+        wordBonus += 20;
+        matchCount++;
+      }
+      if (c.nama && wordRegex.test(c.nama.toLowerCase())) {
+        wordBonus += 10;
+        matchCount++;
+      }
+      if (c.uraian && c.uraian.toLowerCase().includes(word)) {
+        wordBonus += 5;
+        matchCount++;
+      }
+
+      if (matchCount >= 2) {
+        wordBonus += 15;
+        if (isTopCandidate) console.log(`✨ Bonus Sinergi untuk kata "${word}" (+15)`);
+      }
+
+      exactBonus += wordBonus;
+      if (isTopCandidate && wordBonus > 0) {
+        console.log(`✅ Kata "${word}": +${wordBonus} poin`);
+      }
+    });
+
+    // 2. LOGIKA FRASA BERURUTAN (Bigram)
+    // Sekarang akan mendeteksi "kacang lain" karena ada di allTerms secara berurutan
+    if (searchWords.length >= 2) {
+      for (let i = 0; i < searchWords.length - 1; i++) {
+        const phrase = `${searchWords[i]} ${searchWords[i + 1]}`;
+        
+        const phraseRegex = new RegExp(`\\b${phrase}\\b`, 'i');
+
+        if (c.nama && phraseRegex.test(c.nama.toLowerCase())) {
+          exactBonus += 30;
+          if (isTopCandidate) console.log(`🔥 Frasa Berurutan (Nama): "${phrase}" +20`);
+        } else if (c.keyword && phraseRegex.test(c.keyword.toLowerCase())) {
+          exactBonus += 50;
+          if (isTopCandidate) console.log(`🔥 Frasa Berurutan (Keyword): "${phrase}" +50`);
         }
-      });
-    });
+      }
+    }
 
-    const sortedResults = Object.values(aggregateResults).sort((a, b) => a.combinedScore - b.combinedScore);
-    if (sortedResults.length === 0) return { finalResults: [] };
+    // 4. PENALTI AMBIGUITAS (Hanya jika input asli petugas sangat pendek)
+    const originalInputWords = rawQuery.split(/\s+/).filter(w => w.length > 2);
+    if (originalInputWords.length === 1 && !c.kode.startsWith("01")) {
+      exactBonus -= 15;
+      if (isTopCandidate) console.log(`⚠️ Penalti Ambiguitas: -15`);
+    }
 
-    let candidates = sortedResults.slice(0, 30).map(res => ({
-      ...res.item,
-      textScore: Math.min(100, Math.max(0, (1 - res.combinedScore) * 100))
-    }));
+    const finalScore = c.textScore + exactBonus;
+    
+    if (isTopCandidate) {
+      console.log(`📊 TOTAL BONUS: ${exactBonus}`);
+      console.log(`🏆 SKOR AKHIR: ${finalScore.toFixed(2)}`);
+      console.groupEnd();
+    }
 
-    const baseResults = candidates.map((c) => {
-      let finalBase = c.textScore;
-      const searchWords = submittedQuery.toLowerCase().split(/\s+/).filter(w => w.length > 2);
-      const fullQuery = submittedQuery.toLowerCase();
-      let exactBonus = 0;
+    return { ...c, finalScore: finalScore };
+  });
 
-      searchWords.forEach(word => {
-        const regex = new RegExp(`\\b${word}\\b`, 'i');
-        if (c.keyword && regex.test(c.keyword.toLowerCase())) exactBonus += 30;
-      });
+  // Urutkan dan hitung konfidensi
+  const scoredResults = calculateScores(baseResults, data.rules, answers);
+  const sortedFinal = [...scoredResults].sort((a, b) => b.finalScore - a.finalScore);
+  const conf = calculateConfidence(sortedFinal);
+  const top = sortedFinal[0];
 
-      if (c.keyword && c.keyword.toLowerCase().includes(fullQuery)) exactBonus += 70;
-      if (fullQuery.includes("manis") && (!c.keyword || !c.keyword.toLowerCase().includes("manis"))) exactBonus -= 50;
+  const question = getBestQuestion({
+    finalResults: sortedFinal,
+    rules: data.rules,
+    questions: data.questions,
+    answers,
+    confidence: conf,
+    dimensions: data.dimensions
+  });
 
-      return { ...c, finalScore: finalBase + exactBonus };
-    });
-
-    const scoredResults = calculateScores(baseResults, data.rules, answers);
-    const sortedFinal = [...scoredResults].sort((a, b) => b.finalScore - a.finalScore);
-    const conf = calculateConfidence(sortedFinal);
-    const top = sortedFinal[0];
-
-    const question = getBestQuestion({
-      finalResults: sortedFinal,
-      rules: data.rules,
-      questions: data.questions,
-      answers,
-      confidence: conf,
-      dimensions: data.dimensions
-    });
-
-    return {
-      topResult: top,
-      finalResults: sortedFinal,
-      confidence: conf,
-      explanations: generateExplanation({ topResult: top, answers, rules: data.rules }),
-      currentQuestion: question
-    };
-  }, [submittedQuery, expandedQuery, fuse, data, answers]);
+  return {
+    topResult: top,
+    finalResults: sortedFinal,
+    confidence: conf,
+    explanations: generateExplanation({ topResult: top, answers, rules: data.rules }),
+    currentQuestion: question
+  };
+}, [submittedQuery, expandedQuery, fuse, data, answers]);
 
   // --- 3. HANDLERS & EFFECTS ---
 useEffect(() => {
@@ -311,12 +386,19 @@ useEffect(() => {
     }
   }, [inference?.currentQuestion, chatMessages]);
 
-  const processSubmit = (searchQuery) => {
+const processSubmit = (searchQuery) => {
     const q = searchQuery.trim();
     if (!q) return;
 
     setShowResult(false);
-    const autoAnswers = extractAnswers(q, data.dimensionKeywords);
+
+    // --- TAMBAHAN BARU: Kita buat teks yang berisi sinonim ---
+    const cleaned = cleanQuery(q);
+    const expandedText = expandQuery(cleaned, data.synonyms);
+
+    // --- UBAH 'q' MENJADI 'expandedText' DI SINI ---
+    const autoAnswers = extractAnswers(expandedText, data.dimensionKeywords);
+    
     if (Object.keys(autoAnswers).length > 0) {
       setAnswers(prev => ({ ...prev, ...autoAnswers }));
     }
