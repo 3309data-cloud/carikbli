@@ -2,7 +2,8 @@ export default function Sidebar({ activeTab, setActiveTab }) {
   const menuItems = [
     { id: 'keyword', label: 'Keyword Training', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
     { id: 'feedback', label: 'Feedback Salah KBLI', icon: 'M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z' },
-    { id: 'kbli', label: 'KBLI Management', icon: 'M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z' }
+    { id: 'kbli', label: 'Kelola data KBLI', icon: 'M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z' },
+    { id: 'synonym', label: 'Kelola Synonym', icon: 'M18 10h.01M12 10h.01M6 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z' }
   ];
 
   return (

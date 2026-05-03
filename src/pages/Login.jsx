@@ -43,7 +43,7 @@ export default function Login() {
             </svg>
           </div>
           <h2 className="text-2xl font-black text-white uppercase tracking-tight">Admin Login</h2>
-          <p className="text-orange-100 text-xs font-bold uppercase tracking-widest mt-1">Sensus Ekonomi 2026</p>
+          <p className="text-orange-100 text-xs font-bold uppercase tracking-widest mt-1">Aplikasi Cari KBLI</p>
         </div>
 
         {/* Form Login */}

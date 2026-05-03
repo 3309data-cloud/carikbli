@@ -1,59 +1,63 @@
-export function expandQuery(query, synonyms) {
-  if (!query || !synonyms || synonyms.length === 0) {
-    return query || "";
-  }
+/**
+ * Memperluas query dengan sinonim berbobot dari format JSON.
+ * Mengembalikan array: [{ word: string, weight: number }]
+ */
+export function expandQuery(query, synonymsData) {
+  if (!query) return [];
+  
+  const trimmedQuery = query.trim();
+  const lowerQuery = trimmedQuery.toLowerCase();
+  
+  // 1. Masukkan kata asli sebagai prioritas tertinggi (Bobot 1.5 atau 2.0)
+  // Ini memastikan kata yang diketik user selalu menang telak dalam skor.
+  const expandedTerms = [{ word: trimmedQuery, weight: 1 }];
+  
+  if (!synonymsData || synonymsData.length === 0) return expandedTerms;
 
-  let finalQuery = query.trim();
-  const lowerQuery = finalQuery.toLowerCase();
-  const addedSynonyms = new Set();
+  const addedWords = new Set([lowerQuery]);
   const escapeRegExp = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-  for (const item of synonyms) {
+  for (const item of synonymsData) {
     if (!item.keyword || !item.synonym) continue;
 
-    // --- PERUBAHAN UTAMA: Memecah Keyword Koma ---
-    // Ubah "semangka, blewah, melon" menjadi array: ["semangka", "blewah", "melon"]
+    // Pecah keyword koma menjadi array
     const keywordArray = item.keyword
       .split(',')
       .map(k => k.trim().toLowerCase())
       .filter(k => k.length > 0);
 
-    let isMatchFound = false;
-
-    // Cek setiap kata di dalam array keyword tersebut
-    for (const kw of keywordArray) {
+    // Cek kecocokan menggunakan regex word boundary (\b)
+    const isMatch = keywordArray.some(kw => {
       const regex = new RegExp(`\\b${escapeRegExp(kw)}\\b`, 'i');
-      if (regex.test(lowerQuery)) {
-        isMatchFound = true;
-        break; // Hentikan loop jika SATU saja kata sudah cocok (biar efisien)
-      }
-    }
+      return regex.test(lowerQuery);
+    });
 
-    // Jika salah satu dari keyword koma tersebut ada yang cocok
-    if (isMatchFound) {
-      const cleanSynonymText = item.synonym
-        .replace(/[,./?#!$%^&*;:{}=\-_`~()]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
+    if (isMatch) {
+      try {
+        // 2. Parsing kolom synonym (asumsi format: '[{"word":"x", "weight":0.8}]')
+        const synList = typeof item.synonym === 'string' 
+          ? JSON.parse(item.synonym) 
+          : item.synonym;
 
-      const synonymWords = cleanSynonymText.split(" ");
-      const newSynonymsToAppend = [];
-
-      synonymWords.forEach(synWord => {
-        const lowerSynWord = synWord.toLowerCase();
-        
-        // Pastikan kata sinonim belum ada di query asli atau belum pernah ditambahkan
-        if (!addedSynonyms.has(lowerSynWord) && !lowerQuery.includes(lowerSynWord)) {
-          addedSynonyms.add(lowerSynWord);
-          newSynonymsToAppend.push(synWord);
+        if (Array.isArray(synList)) {
+          synList.forEach(synObj => {
+            const lowerSynWord = synObj.word.toLowerCase();
+            
+            // Hindari duplikasi kata dalam pencarian
+            if (!addedWords.has(lowerSynWord)) {
+              addedWords.add(lowerSynWord);
+              expandedTerms.push({
+                word: synObj.word,
+                weight: parseFloat(synObj.weight) || 0.5 // Default bobot jika tidak ada
+              });
+            }
+          });
         }
-      });
-
-      if (newSynonymsToAppend.length > 0) {
-        finalQuery += ` ${newSynonymsToAppend.join(" ")}`;
+      } catch (e) {
+        console.error("Gagal parse JSON sinonim untuk keyword:", item.keyword, e);
       }
     }
   }
 
-  return finalQuery;
+  return expandedTerms;
 }

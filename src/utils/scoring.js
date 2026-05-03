@@ -56,7 +56,11 @@ export function calculateScores(results, rules, answers) {
       if (userAnswer === undefined) return;
 
       const baseBonus = Number(dimRules[0]?.score || 20);
-      const penalty = baseBonus; 
+      const penalty = baseBonus *2; // Penalti lebih besar untuk mismatch
+
+      console.log(`\n🔍 Evaluasi Dimensi: "${dimName}"`);
+      console.log(`   - Jawaban User: "${userAnswer}"`);
+      console.log(`   - Aturan Terkait: ${dimRules.length} rule(s) dengan bonus dasar ${baseBonus}`);
 
       const matchingRule = dimRules.find(r => 
         String(r.answer || r.value).toLowerCase() === String(userAnswer).toLowerCase()
