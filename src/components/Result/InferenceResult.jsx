@@ -80,8 +80,8 @@ export default function InferenceResult({
             <div className="p-5">
               {!isReported && (
                 <div className="mb-4">
-                  <p className="text-sm font-bold text-gray-800">Saya menemukan beberapa kode KBLI yang cocok :</p>
-                  <p className="text-[11px] text-gray-500 mt-1">Pilih salah satu yang paling relevan dengan usaha responden.</p>
+                  <p className="text-sm font-bold text-gray-800">Saya menemukan beberapa kode KBLI yang mirip atau mendekati dengan pencarian Anda :</p>
+                  <p className="text-[11px] text-gray-500 mt-1">Silakan pilih kode yang paling sesuai agar kami kedepannya bisa menyarankan kode KBLI yang tepat.</p>
                 </div>
               )}
 
@@ -114,6 +114,23 @@ export default function InferenceResult({
                     <p className="text-[10px] text-gray-500 mt-1 line-clamp-2 italic">"{cand.uraian}"</p>
                   </button>
                 ))}
+
+                {/* Tombol Baru: Tidak Ada Saran yang Sesuai */}
+                {!isReported && (
+                  <button
+                    onClick={() => onTraining({ 
+                      kode: "0000", 
+                      nama: "KBLI Tidak Ditemukan / Tidak Sesuai", 
+                      uraian: "Petugas melaporkan bahwa tidak ada saran dari sistem yang sesuai dengan deskripsi usaha di lapangan." 
+                    })}
+                    className="w-full mt-2 flex items-center justify-center gap-2 p-4 rounded-2xl border-2 border-dashed border-gray-200 text-gray-400 hover:border-red-300 hover:text-red-500 hover:bg-red-50 transition-all active:scale-[0.98] group"
+                  >
+                    <svg className="w-4 h-4 group-hover:animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                    <span className="text-[10px] font-black uppercase tracking-widest italic">Tidak ada saran yang sesuai</span>
+                  </button>
+                )}
               </div>
 
               {isReported && (
