@@ -28,6 +28,13 @@ export function useInference(submittedQuery, data, answers) {
   }, [submittedQuery, data.synonyms]);
 
   const inference = useMemo(() => {
+    console.log("🔍 [DEBUG] Inisialisasi Inference. Query:", submittedQuery);
+    console.log("🔍 [DEBUG] Expanded Terms:", expandedTerms);
+
+    if (!submittedQuery || expandedTerms.length === 0) {
+      console.warn("⚠️ [DEBUG] Keluar awal: Query atau Expanded Terms kosong.");
+      return {};
+    }
     if (!submittedQuery || expandedTerms.length === 0) return {};
 
     const aggregateResults = {};
