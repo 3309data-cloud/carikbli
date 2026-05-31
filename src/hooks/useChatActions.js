@@ -11,24 +11,42 @@ export function useChatActions(data) {
   const [isBotTyping, setIsBotTyping] = useState(false);
   const [showResult, setShowResult] = useState(false);
 
-  const processSubmit = useCallback((searchQuery) => {
-    const q = searchQuery.trim();
-    if (!q) return;
+const processSubmit = useCallback((searchQuery) => {
+    // ---- TARUH DI SINI (BARIS PERTAMA SEBELUM IF) ----
+    console.log("🔥 [TRIGGERED] processSubmit berjalan! Parameter searchQuery berisi:", `"${searchQuery}"`);
+    console.log("🔥 [TRIGGERED] State query internal saat ini berisi:", `"${query}"`);
+    // --------------------------------------------------
+
+    const q = (searchQuery || query || "").trim();
+    if (!q) {
+      console.warn("🛑 [BLOCKED] Fungsi berhenti karena teks terbaca kosong!");
+      return;
+    }
 
     setShowResult(false);
+    setAnswers({}); 
     
-    // Logika ekstraksi jawaban otomatis dari query (Sinonim aware)
     const cleaned = cleanQuery(q);
-    const expandedText = expandQuery(cleaned, data.synonyms);
-    const autoAnswers = extractAnswers(expandedText, data.dimensionKeywords);
+    console.log("🔍 [DEBUG 1] Hasil setelah cleanQuery:", `"${cleaned}"`);
+    
+    const expandedTerms = expandQuery(cleaned, data.synonyms);
+    console.log("🔍 [DEBUG 2] Hasil array dari expandQuery:", expandedTerms);
+    
+    const megaQuery = Array.isArray(expandedTerms) 
+      ? expandedTerms.map(t => t.word).join(" ")
+      : cleaned;
+    console.log("🔍 [DEBUG 3] Hasil akhir megaQuery untuk Chatbot & Extract:", `"${megaQuery}"`);
+
+    const autoAnswers = extractAnswers(megaQuery, data.dimensionKeywords);
+    console.log("🔍 [DEBUG 4] Hasil ekstraksi jawaban otomatis (autoAnswers):", autoAnswers);
     
     if (Object.keys(autoAnswers).length > 0) {
-      setAnswers(prev => ({ ...prev, ...autoAnswers }));
+      setAnswers(autoAnswers);
     }
 
     setSubmittedQuery(q);
-    setChatMessages(prev => [...prev, { type: "user", text: q }]);
-  }, [data.synonyms, data.dimensionKeywords]);
+    setChatMessages([{ type: "user", text: q }]);
+  }, [data.synonyms, data.dimensionKeywords, query]); // Tambahkan query ke dependency array
 
   const handleAnswer = useCallback((question, value) => {
     setShowResult(false);
