@@ -12,16 +12,10 @@ export function useChatActions(data) {
   const [showResult, setShowResult] = useState(false);
 
 const processSubmit = useCallback((searchQuery) => {
-    // ---- TARUH DI SINI (BARIS PERTAMA SEBELUM IF) ----
     console.log("🔥 [TRIGGERED] processSubmit berjalan! Parameter searchQuery berisi:", `"${searchQuery}"`);
-    console.log("🔥 [TRIGGERED] State query internal saat ini berisi:", `"${query}"`);
-    // --------------------------------------------------
 
     const q = (searchQuery || query || "").trim();
-    if (!q) {
-      console.warn("🛑 [BLOCKED] Fungsi berhenti karena teks terbaca kosong!");
-      return;
-    }
+    if (!q) return;
 
     setShowResult(false);
     setAnswers({}); 
@@ -37,16 +31,35 @@ const processSubmit = useCallback((searchQuery) => {
       : cleaned;
     console.log("🔍 [DEBUG 3] Hasil akhir megaQuery untuk Chatbot & Extract:", `"${megaQuery}"`);
 
-    const autoAnswers = extractAnswers(megaQuery, data.dimensionKeywords);
+    // =======================================================================
+    // JEMBATAN OTOMATIS: LANGSUNG MEMAKAI DATA OPTIONS ASLI KAMU
+    // =======================================================================
+    // Kita ubah struktur data.options secara dinamis agar bisa dibaca oleh mesin pengekstrak
+    const mappedKeywordsFromOptions = (data?.options || []).map(opt => {
+      // Ambil nama dimensi dari question_id (misal: 'q_jenis_potong' menjadi 'jenis_potong')
+      const dimensionName = opt.question_id ? opt.question_id.replace('q_', '') : '';
+      
+      return {
+        dimension: dimensionName,
+        // Daftarkan teks yang akan dicari di dalam kalimat (Label: "HEWAN RUMINANSIA", Value: "hewan ruminansia")
+        keyword: `${opt.label}, ${opt.value}`, 
+        value: opt.value
+      };
+    });
+
+    // Panggil extractAnswers menggunakan data options yang sudah dipetakan
+    const autoAnswers = extractAnswers(megaQuery, mappedKeywordsFromOptions);
     console.log("🔍 [DEBUG 4] Hasil ekstraksi jawaban otomatis (autoAnswers):", autoAnswers);
+    // =======================================================================
     
     if (Object.keys(autoAnswers).length > 0) {
       setAnswers(autoAnswers);
+      console.log("🚀 [SUCCESS] State answers berhasil diisi otomatis:", autoAnswers);
     }
 
     setSubmittedQuery(q);
     setChatMessages([{ type: "user", text: q }]);
-  }, [data.synonyms, data.dimensionKeywords, query]); // Tambahkan query ke dependency array
+  }, [data, query]);
 
   const handleAnswer = useCallback((question, value) => {
     setShowResult(false);

@@ -1,31 +1,64 @@
-export function extractAnswers(query, dimensionKeywords) {
+export function extractAnswers(query, flatKeywords) {
   const answers = {};
   
-  if (!query || !dimensionKeywords || dimensionKeywords.length === 0) {
+  if (!query || !flatKeywords || flatKeywords.length === 0) {
     return answers;
   }
 
   const escapeRegExp = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-  const sortedKeywords = [...dimensionKeywords].sort((a, b) => {
-    const lenA = a.keyword ? a.keyword.length : 0;
-    const lenB = b.keyword ? b.keyword.length : 0;
-    return lenB - lenA; 
+  // 1. NORMALISASI QUERY: Ubah tanda baca jadi spasi, lalu satukan spasi ganda menjadi 1 spasi saja
+  const cleanQueryText = query
+    .toLowerCase()
+    .replace(/[,./?#!$%^&*;:{}=\-_`~()]/g, " ")
+    .replace(/\s+/g, " ") // Mengubah spasi ganda/banyak menjadi hanya satu spasi bersih
+    .trim();
+
+  const preparedKeywords = [];
+  
+  flatKeywords.forEach(item => {
+    if (!item.keyword) return;
+    
+    // Pecah keyword koma
+    const subKeywords = item.keyword.split(',');
+    
+    subKeywords.forEach(subKw => {
+      // 2. NORMALISASI KEYWORD DB: Amankan dari spasi liar dan paksa huruf kecil
+      const trimmedSub = subKw.trim().toLowerCase().replace(/\s+/g, " ");
+      if (trimmedSub) {
+        preparedKeywords.push({
+          ...item,
+          singleKeyword: trimmedSub
+        });
+      }
+    });
   });
 
-  // Tambahan: Bersihkan query dari tanda baca agar \b bekerja maksimal
-  const cleanQuery = query.toLowerCase().replace(/[,./?#!$%^&*;:{}=\-_`~()]/g, " ");
+  // Urutkan dari sub-keyword karakter terpanjang
+  preparedKeywords.sort((a, b) => b.singleKeyword.length - a.singleKeyword.length);
 
-  for (const item of sortedKeywords) {
-    if (!item.keyword || item.keyword.trim() === "") continue;
+  // 3. PROSES PENCOCOKAN YANG LEBIH FLEKSIBEL
+  for (const item of preparedKeywords) {
+    // Menggunakan regex pintar yang toleran terhadap variasi spasi namun tetap menjaga keutuhan kata
+    const safeKeyword = escapeRegExp(item.singleKeyword);
+    const regex = new RegExp(`(?:^|\\s)${safeKeyword}(?:$|\\s)`, 'i');
+    
+    const isMatch = regex.test(cleanQueryText);
 
-    const keyword = item.keyword.toLowerCase().trim();
-    const regex = new RegExp(`\\b${escapeRegExp(keyword)}\\b`, 'i');
+    // Filter khusus pelacak di konsol
+    const lowerKeyword = item.singleKeyword.toLowerCase();
+    if (lowerKeyword.includes("ruminansia") || lowerKeyword.includes("sapi")) {
+      console.log(
+        `🔎 [TRACKING KEYWORD DB] -> Kata DB: "${item.singleKeyword}" | ` +
+        `Dimensi: "${item.dimension}" | Value: "${item.value}" | ` +
+        `Apakah Match dengan Query? ${isMatch ? "✅ MATCH" : "❌ NO"}`
+      );
+    }
 
-    if (regex.test(cleanQuery)) {
-      // First-come first-serve (karena sudah disort terpanjang)
+    if (isMatch) {
       if (answers[item.dimension] === undefined) {
         answers[item.dimension] = item.value;
+        console.log(`🚀 [EXTRACT SUCCESS] -> Dimensi "${item.dimension}" otomatis terisi nilai: "${item.value}"`);
       }
     }
   }
