@@ -52,7 +52,7 @@ function App() {
   } = useChatActions(data);
 
   // 3. Inference Engine Hook
-  const inference = useInference(submittedQuery, data, answers);
+  const inference = useInference(submittedQuery, data, answers, chatMessages);
 
   // 4. Scroll Logic Hook
   const { mainRef, resultCardRef, typingRef, verifikasiRef, scrollToElement } = useScrollLogic();

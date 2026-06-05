@@ -3,10 +3,29 @@ export function getBestQuestion({
   rules,
   questions,
   answers,
-  dimensions
+  dimensions,
+  chatMessages = []
 }) {
-  // 1. PRE-VALIDATION & GAP ANALYSIS
-  const candidates = finalResults.slice(0, 5);
+  
+  // =======================================================================
+  // REVISI PENYELAMAT: AMANKAN UKURAN SLICE SECARA ABSOLUT
+  // Kita periksa apakah ada pesan dari user yang bertipe jawaban kuesioner.
+  // Cara paling aman: Hitung jumlah pesan dari USER di dalam chatMessages.
+  // Pesan user pertama (indeks 0) ADALAH kalimat pencarian (searchQuery).
+  // Jika userMessages > 1, artinya user SUDAH PERNAH mengklik opsi jawaban di chat bubble!
+  // =======================================================================
+  const userMessagesCount = chatMessages.filter(m => m.type === "user").length;
+  const isFirstBotQuestion = userMessagesCount <= 1; 
+  
+  const sliceSize = isFirstBotQuestion ? 20 : 5;
+  const candidates = finalResults.slice(0, sliceSize);
+  
+  console.log(
+    `⚙️ [ENGINE STATUS] User Messages: ${userMessagesCount} | ` +
+    `Mode: ${isFirstBotQuestion ? "🔍 AWAL (Slice 20)" : "🎯 KUESIONER BERJALAN (Slice 5)"} | ` +
+    `Kandidat Diproses: ${sliceSize}`
+  );
+
   if (candidates.length < 2) return null;
 
   const scoreGap = candidates[0].finalScore - candidates[1].finalScore;
@@ -35,13 +54,12 @@ export function getBestQuestion({
     }
   }
 
-  // 3. STRICT FILTERING (Diambil dari Versi A)
-  // Memastikan kita hanya memproses kandidat yang benar-benar masih relevan dengan jawaban user saat ini
+  // 3. STRICT FILTERING
   const filteredCandidates = candidates.filter(candidate => {
     const dims = candidateDimsMap[String(candidate.kode)];
     return Object.entries(answers).every(([dimName, ansValue]) => {
       const relatedDims = dims.filter(d => d.dimension === dimName);
-      if (relatedDims.length === 0) return true; // Tidak ada rule = netral
+      if (relatedDims.length === 0) return true; 
       
       return relatedDims.some(d => 
         String(d.answer || d.value).toLowerCase() === String(ansValue).toLowerCase()
@@ -50,7 +68,7 @@ export function getBestQuestion({
   });
 
   if (filteredCandidates.length < 2) {
-    console.log("ℹ️ [ENGINE] Kandidat valid tersisa < 2 setelah filtering. Stop.");
+    console.log(`ℹ️ [ENGINE] Kandidat valid tersisa ${filteredCandidates.length} (< 2) setelah filtering. Stop.`);
     return null;
   }
 
@@ -58,7 +76,6 @@ export function getBestQuestion({
   const dimensionMap = {};
   const activeCodes = filteredCandidates.map(c => String(c.kode));
 
-  // Cari dimensi yang belum dijawab tapi dimiliki oleh kandidat aktif
   const allRelevantDimensions = new Set();
   activeCodes.forEach(code => {
     candidateDimsMap[code].forEach(d => {
@@ -78,10 +95,7 @@ export function getBestQuestion({
     });
   }
 
-  // 5. HEURISTIC SCORING (Diambil dari Versi B)
-  // =========================
   // 5. HEURISTIC SCORING DENGAN LOG DETAIL
-  // =========================
   let bestDimension = null;
   let bestScore = -1;
 
@@ -93,16 +107,12 @@ export function getBestQuestion({
   Object.entries(dimensionMap).forEach(([dim, values]) => {
     const variation = values.size;
     
-    // Skip jika tidak ada perbedaan (tidak berguna untuk bertanya)
     if (variation <= 1) {
       console.log(` ${dim.padEnd(16)} | ${String(variation).padEnd(9)} | -        | SKIP (No Diff) | -`);
       return;
     }
 
     const priority = priorityMap[dim] || 0;
-    
-    // Formula: Variasi * (Priority + 1)
-    // +1 agar dimensi dengan priority 0 tetap memiliki nilai
     const dimScore = variation * (priority + 1);
 
     console.log(
@@ -143,8 +153,6 @@ export function getBestQuestion({
     id: q.id,
     question: q.question,
     text: q.question,
-    dimension: bestDimension,
-    //candidates: filteredCandidates,
-  //candidateDimsMap
+    dimension: bestDimension
   };
 }

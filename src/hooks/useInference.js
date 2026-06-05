@@ -7,7 +7,8 @@ import { calculateConfidence } from "../utils/confidence";
 import { getBestQuestion } from "../utils/questionEngine";
 import { generateExplanation } from "../utils/explanation";
 
-export function useInference(submittedQuery, data, answers) {
+// PERBAIKAN 1: Tambahkan chatMessages ke daftar parameter input hook
+export function useInference(submittedQuery, data, answers, chatMessages = []) {
   // Inisialisasi Fuse.js untuk pencarian teks dasar
   const fuse = useMemo(() => new Fuse(data.kbli, {
     keys: [
@@ -40,11 +41,9 @@ export function useInference(submittedQuery, data, answers) {
       const word = term.word.toLowerCase().trim();
       if (!word) return;
 
-      // Whitelist kata-kata industri pendek yang krusial agar tidak gugur di awal
       const isShortWord = word.length <= 2;
       const isSpecialKeyword = word === "es" || word === "teh" || word === "cat" || word === "gas";
       
-      // Jika kata terlalu pendek dan tidak masuk dalam pengecualian penting, lewati
       if (isShortWord && !isSpecialKeyword) return;
       
       const results = fuse.search(word);
@@ -54,13 +53,10 @@ export function useInference(submittedQuery, data, answers) {
         let customFuseScore = res.score;
         let finalTermWeight = term.weight;
 
-        // Kontrol penalti untuk kata pendek murni agar tidak memicu false-positive massal
         if (isShortWord && !isSpecialKeyword) {
           finalTermWeight = term.weight * 0.4; 
         }
 
-        // AMANKAN RADAR AWAL: Jika token COCOK di kolom KEYWORD (tags), 
-        // langsung potong skor Fuse-nya menjadi sangat kecil (Makin kecil makin prioritas di Fuse.js)
         if (res.item.keyword && res.item.keyword.toLowerCase().includes(word)) {
           customFuseScore = res.score * 0.1; 
         }
@@ -70,7 +66,6 @@ export function useInference(submittedQuery, data, answers) {
         if (!aggregateResults[id]) {
           aggregateResults[id] = { ...res, combinedScore: weightedFuseScore };
         } else {
-          // Ambil skor terbaik (terkecil)
           aggregateResults[id].combinedScore = Math.min(aggregateResults[id].combinedScore, weightedFuseScore);
         }
       });
@@ -79,18 +74,16 @@ export function useInference(submittedQuery, data, answers) {
     const sortedResults = Object.values(aggregateResults).sort((a, b) => a.combinedScore - b.combinedScore);
     if (sortedResults.length === 0) return { finalResults: [] };
 
-    // Ambil 40 kandidat teratas agar variasi kata tersembunyi berkesempatan naik daun
     let candidates = sortedResults.slice(0, 40).map(res => {
       let baseTextScore = Math.min(100, Math.max(0, (1 - res.combinedScore) * 100));
       
       // =======================================================================
-      // TAHAP 2: MULTI-WORD KEYWORD BOOST (Makin banyak kata cocok di Tags, Nilai Meroket)
+      // TAHAP 2: MULTI-WORD KEYWORD BOOST
       // =======================================================================
       if (res.item.keyword) {
         const targetKeywordLower = res.item.keyword.toLowerCase();
         let matchedWordsCount = 0;
         
-        // Hitung berapa banyak token query pengguna yang beririsan dengan tag keyword KBLI ini
         cleanTokens.forEach(token => {
           const tokenRegex = new RegExp(`\\b${token}\\b`, 'i');
           if (tokenRegex.test(targetKeywordLower)) {
@@ -98,13 +91,10 @@ export function useInference(submittedQuery, data, answers) {
           }
         });
 
-        // Eksekusi bonus bertingkat jika minimal ada 2 kata yang saling mengunci konteks
         if (matchedWordsCount >= 2) {
-          // Rumus: Skala dasar 85, melonjak bertambah +5 untuk setiap kata ekstra yang valid
           const dynamicBoost = 85 + (matchedWordsCount * 5);
           baseTextScore = Math.max(baseTextScore, Math.min(100, dynamicBoost));
           
-          // Konsol pelacak khusus untuk memantau pergerakan kata sensitif
           if (cleanTokens.includes("es") && cleanTokens.includes("batu")) {
             console.log(`🎯 [KEYWORD HIT] KBLI: ${res.item.kode} | Relevansi: ${matchedWordsCount} Kata Pas | Skor Dasar Di-Boost: ${baseTextScore}`);
           }
@@ -118,12 +108,11 @@ export function useInference(submittedQuery, data, answers) {
     });
 
     // =======================================================================
-    // TAHAP 3: TAMBAHAN BONUS PENULISAN FORMAL (EKSKlusif Kolom Nama/Uraian)
+    // TAHAP 3: TAMBAHAN BONUS PENULISAN FORMAL
     // =======================================================================
     const baseResults = candidates.map((c) => {
       let exactBonus = 0;
 
-      // A. Perhitungan bonus kata tunggal formal
       expandedTerms.forEach(term => {
         if (!term.word.trim()) return;
         const wordRegex = new RegExp(`\\b${term.word}\\b`, 'i');
@@ -136,7 +125,6 @@ export function useInference(submittedQuery, data, answers) {
         exactBonus += wordBonus;
       });
 
-      // B. Otomatisasi Frasa Berdampingan (N-Gram Sliding Window untuk Struktur Teks Resmi)
       if (cleanTokens.length >= 2) {
         for (let len = 2; len <= Math.min(3, cleanTokens.length); len++) {
           for (let i = 0; i <= cleanTokens.length - len; i++) {
@@ -156,7 +144,7 @@ export function useInference(submittedQuery, data, answers) {
     });
 
     // =======================================================================
-    // TAHAP 4: INTEGRASI ATURAN POHON KEPUTUSAN (DIMENSI RULES & ANSWERS)
+    // TAHAP 4: INTEGRASI ATURAN POHON KEPUTUSAN
     // =======================================================================
     const scoredResults = calculateScores(baseResults, data.rules, answers);
     const sortedFinal = [...scoredResults].sort((a, b) => b.finalScore - a.finalScore);
@@ -170,7 +158,8 @@ export function useInference(submittedQuery, data, answers) {
       questions: data.questions,
       answers,
       confidence: conf,
-      dimensions: data.dimensions
+      dimensions: data.dimensions,
+      chatMessages: chatMessages // Aman digunakan sekarang
     });
 
     return {
@@ -180,7 +169,8 @@ export function useInference(submittedQuery, data, answers) {
       explanations: generateExplanation({ topResult: top, answers, rules: data.rules }),
       currentQuestion: question
     };
-  }, [submittedQuery, expandedTerms, fuse, data, answers]);
+    // PERBAIKAN 2: Masukkan chatMessages ke dalam dependency array useMemo
+  }, [submittedQuery, expandedTerms, fuse, data, answers, chatMessages]);
 
   return inference;
 }

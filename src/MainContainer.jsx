@@ -32,8 +32,57 @@ export default function MainContainer() {
     if (data) setCurrentVersion(data.value);
   };
 
-  const handlePushUpdate = async () => {
-    // ... (kode push update tetap sama)
+const handlePushUpdate = async () => {
+    // 1. Cegah eksekusi ganda jika proses sedang berjalan atau versi belum siap
+    if (isUpdating || currentVersion === "...") return;
+
+    setIsUpdating(true);
+
+    try {
+      // 2. Pecah string versi berdasarkan titik (contoh: "1", "00", "000")
+      const versionParts = currentVersion.split('.');
+      
+      if (versionParts.length !== 3) {
+        throw new Error("Format versi database tidak valid.");
+      }
+
+      const major = versionParts[0];
+      const minor = versionParts[1];
+      const patchStr = versionParts[2];
+
+      // 3. Ubah bagian patch menjadi angka dan tambahkan 1
+      const newPatchNum = parseInt(patchStr, 10) + 1;
+
+      // 4. Validasi batas maksimal (999)
+      if (newPatchNum > 999) {
+        alert("Versi patch telah mencapai batas maksimal (999)!");
+        setIsUpdating(false);
+        return;
+      }
+
+      // 5. Format kembali ke 3 digit string (contoh: 1 -> "001", 12 -> "012")
+      const newPatchStr = String(newPatchNum).padStart(3, '0');
+      const newVersion = `${major}.${minor}.${newPatchStr}`;
+
+      // 6. Update ke database Supabase
+      const { error } = await supabase
+        .from('app_metadata')
+        .update({ value: newVersion })
+        .eq('key', 'db_version');
+
+      if (error) throw error;
+
+      // 7. Update state lokal agar UI langsung berubah
+      setCurrentVersion(newVersion);
+      alert(`Berhasil memperbarui database ke versi ${newVersion}`);
+
+    } catch (error) {
+      console.error("Gagal melakukan push update:", error.message);
+      alert("Terjadi kesalahan saat memperbarui versi database.");
+    } finally {
+      // 8. Matikan efek loading / animasi spin
+      setIsUpdating(false);
+    }
   };
 
   const handleLogout = async () => {

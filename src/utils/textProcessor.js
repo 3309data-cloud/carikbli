@@ -3,7 +3,7 @@
 const STOP_WORDS = [
   "dan", "yang", "untuk", "di", "ke", "dari", "pada", "dalam", 
   "dengan", "sebagai", "adalah", "itu", "ini", "saya", "mau", 
-  "cari", "toko", "jual", "usaha", "bisnis", "jasa", "perusahaan"
+  "cari", "toko", "usaha", "bisnis", "jasa", "perusahaan"
 ];
 
 export const cleanQuery = (text) => {
